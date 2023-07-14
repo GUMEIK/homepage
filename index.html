@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>路径规划</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-contextmenu/dist/leaflet.contextmenu.css" />
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: Arial, sans-serif;
+    }
+
+    #map {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 100%;
+    }
+
+    .button-container {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      z-index: 999;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .button-container button {
+      padding: 10px 20px;
+      background-color: #007bff;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    .button-container button:hover {
+      background-color: #0056b3;
+    }
+
+    .button-container button:active {
+      background-color: #003c80;
+    }
+
+    .distance-label {
+      /*background-color: white;*/
+      /*padding: 4px 8px;*/
+      /*border-radius: 4px;*/
+      color: green;
+      font-size: 16px;
+    }
+
+    .status-container {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      z-index: 999;
+      background-color: rgba(255, 255, 255, 0.8);
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+
+    .modal {
+      display: none;
+      position: fixed;
+      z-index: 9999;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      overflow: auto;
+      background-color: rgba(0, 0, 0, 0.4);
+    }
+
+    .modal-content {
+      background-color: #fefefe;
+      margin: 15% auto;
+      padding: 20px;
+      border: 1px solid #888;
+      width: 200px;
+      border-radius: 4px;
+    }
+
+    .modal-content p {
+      margin-top: 0;
+    }
+
+    .close {
+      color: #aaa;
+      float: right;
+      font-size: 28px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    .close:hover,
+    .close:focus {
+      color: black;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .modal-buttons {
+      margin-top: 20px;
+      text-align: right;
+    }
+
+    .modal-confirm,
+    .modal-cancel {
+      margin-left: 8px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<div class="button-container">
+  <button id="selectPointBtn">选点</button>
+  <button id="endSelectBtn">结束选点</button>
+  <div>
+    <span>路径规划方式：</span>
+    <select id="routeMethodSelect">
+      <option value="direct">直线距离</option>
+      <option value="driving">驾车路线</option>
+      <option value="other">其他方式</option>
+    </select>
+  </div>
+  <button id="routeBtn">路径规划</button>
+  <button id="clearBtn">清除</button>
+</div>
+<div class="status-container" id="statusContainer"></div>
+
+<div id="deleteModal" class="modal">
+  <div class="modal-content">
+    <span class="close">&times;</span>
+    <p>是否确定删除该节点？</p>
+    <div class="modal-buttons">
+      <button id="confirmDeleteBtn" class="modal-confirm">确定</button>
+      <button id="cancelDeleteBtn" class="modal-cancel">取消</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-contextmenu/dist/leaflet.contextmenu.js"></script>
+<script>
+  var map = L.map('map').setView([39.9085, 116.3975], 10); // 北京市的经纬度
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+  }).addTo(map);
+
+  var markers = [];
+  var isSelecting = false;
+  var distances = [];
+  var distanceLabels = [];
+  var routeLayer = null;
+  var deleteMarker = null;
+  var deleteModal = document.getElementById('deleteModal');
+  var confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
+  var cancelDeleteBtn = document.getElementById('cancelDeleteBtn');
+  var routeMethodSelect = document.getElementById('routeMethodSelect');
+
+  function selectPoint() {
+    if (!isSelecting) {
+      isSelecting = true;
+      document.getElementById('statusContainer').textContent = '当前处于选点状态';
+      map.on('click', addMarker);
+    }
+  }
+
+  function endSelect() {
+    isSelecting = false;
+    document.getElementById('statusContainer').textContent = '';
+    map.off('click', addMarker);
+  }
+
+  function addMarker(e) {
+    var marker = L.marker(e.latlng, { draggable: true }).addTo(map);
+    marker.on('click', function(event) {
+      deleteMarker = marker;
+      deleteModal.style.display = 'block';
+    });
+    markers.push(marker);
+  }
+
+  function updateRoute() {
+    clearRoute();
+    var coordinates = [];
+
+    markers.forEach(function(marker) {
+      coordinates.push(marker.getLatLng());
+    });
+
+    if (coordinates.length < 2) {
+      return;
+    }
+
+    routeLayer = L.polyline(coordinates, { color: 'blue' }).addTo(map);
+    calculateDistances(coordinates);
+    showDistancesOnMap();
+  }
+
+  function calculateDistances(coordinates) {
+    distances = [];
+    for (var i = 0; i < coordinates.length - 1; i++) {
+      var from = coordinates[i];
+      var to = coordinates[i + 1];
+      var distance = getDistance(from, to);
+      distances.push(distance);
+    }
+  }
+
+  function getDistance(from, to) {
+    if (routeMethodSelect.value === 'direct') {
+      return getDirectDistance(from, to);
+    } else if (routeMethodSelect.value === 'driving') {
+      return getDrivingDistance(from, to);
+    } else {
+      return 100;
+    }
+  }
+
+  function getDirectDistance(from, to) {
+    var radianFactor = Math.PI / 180;
+    var lat1 = from.lat;
+    var lon1 = from.lng;
+    var lat2 = to.lat;
+    var lon2 = to.lng;
+    var R = 6371; // 地球半径，单位为千米
+    var dLat = (lat2 - lat1) * radianFactor;
+    var dLon = (lon2 - lon1) * radianFactor;
+    var a =
+            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * radianFactor) * Math.cos(lat2 * radianFactor) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    var distance = R * c;
+    return distance;
+  }
+
+  function getDrivingDistance(from, to) {
+    // Placeholder function for driving distance calculation
+    return 0;
+  }
+
+  function showDistancesOnMap() {
+    // 清除之前的标记
+    distanceLabels.forEach(function(distanceLabel) {
+      map.removeLayer(distanceLabel);
+    });
+    distanceLabels = [];
+
+    if (distances.length === 0) {
+      return;
+    }
+
+    var polylineLatLngs = routeLayer.getLatLngs();
+    polylineLatLngs.forEach(function(latlng, index) {
+      if (index < polylineLatLngs.length - 1) {
+        var from = latlng;
+        var to = polylineLatLngs[index + 1];
+        var midpoint = L.latLng(
+                (from.lat + to.lat) / 2,
+                (from.lng + to.lng) / 2
+        );
+
+        var distance = distances[index].toFixed(2) + 'km';
+        var distanceLabel = L.marker(midpoint, {
+          icon: L.divIcon({ className: 'distance-label', html: distance })
+        }).addTo(map);
+
+        distanceLabels.push(distanceLabel);
+      }
+    });
+  }
+
+  function clearMap() {
+    clearMarkers();
+    clearRoute();
+  }
+
+  function clearMarkers() {
+    markers.forEach(function(marker) {
+      map.removeLayer(marker);
+    });
+    markers = [];
+  }
+
+  function clearRoute() {
+    if (routeLayer) {
+      map.removeLayer(routeLayer);
+      routeLayer = null;
+    }
+
+    distanceLabels.forEach(function(distanceLabel) {
+      map.removeLayer(distanceLabel);
+    });
+    distanceLabels = [];
+  }
+
+  function confirmDelete() {
+    if (deleteMarker) {
+      map.removeLayer(deleteMarker);
+      markers = markers.filter(function(marker) {
+        return marker !== deleteMarker;
+      });
+      deleteMarker = null;
+    }
+    deleteModal.style.display = 'none';
+  }
+
+  function cancelDelete() {
+    deleteMarker = null;
+    deleteModal.style.display = 'none';
+  }
+
+  var selectPointBtn = document.getElementById('selectPointBtn');
+  selectPointBtn.addEventListener('click', selectPoint);
+
+  var endSelectBtn = document.getElementById('endSelectBtn');
+  endSelectBtn.addEventListener('click', endSelect);
+
+  var routeBtn = document.getElementById('routeBtn');
+  routeBtn.addEventListener('click', function() {
+    clearRoute();
+    updateRoute();
+  });
+
+  var clearBtn = document.getElementById('clearBtn');
+  clearBtn.addEventListener('click', function() {
+    clearMap();
+    document.getElementById('statusContainer').textContent = '';
+  });
+
+  confirmDeleteBtn.addEventListener('click', confirmDelete);
+  cancelDeleteBtn.addEventListener('click', cancelDelete);
+
+  // 移除左上角缩放按钮
+  map.zoomControl.setPosition('topright');
+</script>
+</body>
+</html>
